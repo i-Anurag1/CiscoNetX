@@ -6,6 +6,10 @@ if _BACKEND_ROOT not in sys.path:
     sys.path.insert(0, _BACKEND_ROOT)
 from logging.config import fileConfig
 from sqlalchemy import engine_from_config, pool
+import sys
+from pathlib import Path as _Path
+_ROOT=str(_Path(__file__).resolve().parents[1])
+if _ROOT not in sys.path: sys.path.insert(0,_ROOT)
 from alembic import context
 from app.db.session import Base
 from app.models import *
