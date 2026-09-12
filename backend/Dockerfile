@@ -5,6 +5,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY app ./app
 COPY tests ./tests
 COPY pytest.ini .
+COPY alembic ./alembic
+COPY alembic.ini .
+COPY start.sh .
 ENV PYTHONPATH=/app
 EXPOSE 8000
-COPY start.sh .\nRUN chmod +x start.sh\nCMD ["./start.sh"]
+CMD ["sh","start.sh"]
