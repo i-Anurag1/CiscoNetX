@@ -1,32 +1,58 @@
-import os
 import sys
-from pathlib import Path as _Path
-_BACKEND_ROOT = str(_Path(__file__).resolve().parents[1])
-if _BACKEND_ROOT not in sys.path:
-    sys.path.insert(0, _BACKEND_ROOT)
-from logging.config import fileConfig
-from sqlalchemy import engine_from_config, pool
-import sys
-from pathlib import Path as _Path
-_ROOT=str(_Path(__file__).resolve().parents[1])
-if _ROOT not in sys.path: sys.path.insert(0,_ROOT)
+from pathlib import Path
+
+BACKEND_ROOT = str(Path(__file__).resolve().parents[1])
+if BACKEND_ROOT not in sys.path:
+    sys.path.insert(0, BACKEND_ROOT)
+
 from alembic import context
+from sqlalchemy import engine_from_config, pool
+
 from app.db.session import Base
 from app.models import *
 from app.core.config import settings
-config=context.config
-config.set_main_option('sqlalchemy.url',settings.database_url)
-if config.config_file_name:
-    try: fileConfig(config.config_file_name)
-    except KeyError: pass
-target_metadata=Base.metadata
+
+config = context.config
+
+# AntiDeploy supplies DATABASE_URL through application settings.
+# Override the static alembic.ini URL with the runtime PostgreSQL URL.
+config.set_main_option("sqlalchemy.url", settings.database_url.replace("%", "%%"))
+
+target_metadata = Base.metadata
+
+
 def run_migrations_offline():
- context.configure(url=settings.database_url,target_metadata=target_metadata,literal_binds=True,compare_type=True); 
- with context.begin_transaction(): context.run_migrations()
+    url = settings.database_url
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        compare_type=True,
+    )
+
+    with context.begin_transaction():
+        context.run_migrations()
+
+
 def run_migrations_online():
- connectable=engine_from_config(config.get_section(config.config_ini_section,{}),prefix='sqlalchemy.',poolclass=pool.NullPool)
- with connectable.connect() as connection:
-  context.configure(connection=connection,target_metadata=target_metadata,compare_type=True)
-  with context.begin_transaction(): context.run_migrations()
-if context.is_offline_mode(): run_migrations_offline()
-else: run_migrations_online()
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+
+    with connectable.connect() as connection:
+        context.configure(
+            connection=connection,
+            target_metadata=target_metadata,
+            compare_type=True,
+        )
+
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
