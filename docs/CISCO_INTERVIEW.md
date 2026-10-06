@@ -1,0 +1,5 @@
+# CiscoNetX interview map
+
+Be ready to explain the separation between the control plane and data plane, how Dijkstra differs from Distance Vector, why OSPF converges differently from RIP, how a switch learns MAC addresses, why VLANs isolate broadcast domains, how ARP maps IPv4 addresses to MAC addresses, how NAT/PAT changes endpoint identity, how TCP reacts to loss, why UDP has lower protocol overhead, how CRC differs from checksum, how Go-Back-N differs from Selective Repeat, how CSMA/CD differs from CSMA/CA, how QoS changes queueing policy, how ACL evaluation works, how DDoS and port-scan detectors derive evidence, and how deterministic seeds make simulation results reproducible.
+
+For the main demonstration, create an enterprise topology, run traffic, record the baseline path, fail a router, recompute the route, compare latency and packet loss, inspect packet events, trigger a defensive security rule, train or evaluate the telemetry model, ask the grounded assistant why the path changed, and export the engineering report.

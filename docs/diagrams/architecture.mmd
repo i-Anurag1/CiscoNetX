@@ -1,0 +1,14 @@
+flowchart LR
+UI[React NOC Console]-->API[FastAPI API]
+API-->SIM[Deterministic Simulator]
+API-->DB[(PostgreSQL)]
+SIM-->R[Routing]
+SIM-->P[Packets]
+SIM-->S[Switching VLAN ARP NAT]
+SIM-->T[TCP UDP QoS]
+API-->SEC[Firewall ACL Detection]
+API-->ML[Telemetry ML]
+API-->SDN[SDN Controller]
+SDN-->SIM
+API-->WS[WebSocket Events]
+EXT[Mininet OVS FRR Scapy]-.optional.->SIM
