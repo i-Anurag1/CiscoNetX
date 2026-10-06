@@ -18,3 +18,11 @@ def test_engineering_security_ai():
     assert len(experiment({'topology':DEFAULT_TOPOLOGY})['results'])==3
     a=security_analyze({'flows':[{'source_ip':'10.0.0.1','destination_ip':'10.0.2.10','destination_port':p,'source_mac':'aa' if p%2 else 'bb'} for p in range(1,15)]}); assert a['alerts']
     assert explain({'question':'why route','state':{'topology':DEFAULT_TOPOLOGY,'route':['pc1','server1']}})['grounded']
+
+
+def test_convergence_compares_healthy_baseline_with_failed_link():
+    broken={**DEFAULT_TOPOLOGY,'links':[dict(e) for e in DEFAULT_TOPOLOGY['links']]}
+    broken['links'][2]['up']=False
+    x=convergence({'topology':broken,'baseline_topology':DEFAULT_TOPOLOGY,'source':'pc1','destination':'server1','packets':100})
+    assert x['before_path'] != x['after_path']
+    assert x['converged'] is True

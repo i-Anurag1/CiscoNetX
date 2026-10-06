@@ -127,3 +127,24 @@ Simulator and emulation features are designed around synthetic or dry-run networ
 
 GitHub Actions runs Python compilation, the backend test suite, a fresh Alembic migration, frontend `npm ci`, TypeScript typecheck, and Vite production build.
 
+
+## Student Lab Mode
+
+CiscoNetX now includes an AI Lab Coach for Computer Networks practicals.
+
+Open `AI LAB COACH`, paste the teacher's question, and the assistant returns:
+
+- detected CN topic
+- lab objective
+- step-by-step procedure
+- Cisco-style CLI commands where relevant
+- expected result
+- hints
+- viva questions
+- a starter topology when the lab is supported
+
+Use `LOAD THIS LAB INTO TOPOLOGY` to move from the question directly into the simulator.
+
+The Topology workspace also provides a Packet Tracer-style student workflow with device creation, cable/connect controls, Simulation/Realtime modes, link failure controls, topology analysis and a simulation event log.
+
+See `docs/AI_LAB_COACH.md` for the full workflow and optional LLM configuration.

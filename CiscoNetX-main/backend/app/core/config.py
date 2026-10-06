@@ -13,6 +13,10 @@ class Settings(BaseSettings):
     secret_key: str = Field(default="", validation_alias="SECRET_KEY")
     simulation_max_events: int = Field(default=100000, ge=1000, le=1000000)
     rate_limit_per_minute: int = Field(default=120, ge=10, le=10000)
+    ai_base_url: str = Field(default="", validation_alias="AI_BASE_URL")
+    ai_model: str = Field(default="", validation_alias="AI_MODEL")
+    ai_api_key: str = Field(default="", validation_alias="AI_API_KEY")
+    ai_timeout_seconds: float = Field(default=12, ge=3, le=60, validation_alias="AI_TIMEOUT_SECONDS")
     model_config = SettingsConfigDict(env_file=".env", extra="ignore", case_sensitive=False)
 
     @property

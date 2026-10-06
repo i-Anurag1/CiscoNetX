@@ -1,4 +1,5 @@
 import json, time, uuid
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Header, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
@@ -20,18 +21,19 @@ from app.simulation.flow import SDNController, traffic_simulation
 from app.networking import subnet, validate_topology
 from app.enterprise import router as enterprise_router
 
-app=FastAPI(title='CiscoNetX API',version=settings.app_version,description='Enterprise network simulation and NOC platform',docs_url='/docs' if not settings.is_production else None,redoc_url='/redoc' if not settings.is_production else None)
-app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origin_list,allow_credentials=False,allow_methods=['GET','POST','PUT','OPTIONS'],allow_headers=['Authorization','Content-Type','X-Request-ID'])
-clients=set()
-app.include_router(enterprise_router)
-
-
-@app.on_event('startup')
-def validate_runtime_config():
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
     if settings.is_production and (not settings.secret_key or len(settings.secret_key) < 32):
         raise RuntimeError('SECRET_KEY must contain at least 32 characters in production')
     if settings.is_production and settings.database_url.startswith('sqlite:///'):
         raise RuntimeError('SQLite is not supported in production. Use PostgreSQL.')
+    yield
+
+app=FastAPI(title='CiscoNetX API',version=settings.app_version,description='Enterprise network simulation and NOC platform',docs_url='/docs' if not settings.is_production else None,redoc_url='/redoc' if not settings.is_production else None,lifespan=lifespan)
+app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origin_list,allow_credentials=False,allow_methods=['GET','POST','PUT','OPTIONS'],allow_headers=['Authorization','Content-Type','X-Request-ID'])
+clients=set()
+app.include_router(enterprise_router)
+
 
 
 def current_user(authorization: str | None = Header(default=None)) -> dict:

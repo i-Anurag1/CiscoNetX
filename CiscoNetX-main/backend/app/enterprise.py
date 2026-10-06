@@ -1,8 +1,9 @@
 from __future__ import annotations
-import ipaddress, math, random, statistics, time, uuid
+import ipaddress, json, math, random, statistics, time, uuid
 from collections import defaultdict, Counter
 from dataclasses import dataclass, asdict
 from fastapi import APIRouter, HTTPException
+from app.core.config import settings
 
 router = APIRouter(prefix='/api/v1/enterprise', tags=['enterprise'])
 
@@ -111,7 +112,7 @@ def tcp_session(payload:dict):
 
 @router.post('/routing/convergence')
 def convergence(payload:dict):
-    t=payload['topology']; src=payload.get('source','pc1'); dst=payload.get('destination','server1'); failed=payload.get('failed_nodes',[]); before=_shortest(t,src,dst); after=_shortest(t,src,dst,failed); lost=max(0,int(payload.get('packets',100)*float(payload.get('loss_rate',.02)))) if not after else int(payload.get('packets',100)*float(payload.get('failure_loss',.03)))
+    t=payload['topology']; baseline=payload.get('baseline_topology',t); src=payload.get('source','pc1'); dst=payload.get('destination','server1'); failed=payload.get('failed_nodes',[]); before=_shortest(baseline,src,dst); after=_shortest(t,src,dst,failed); lost=max(0,int(payload.get('packets',100)*float(payload.get('loss_rate',.02)))) if not after else int(payload.get('packets',100)*float(payload.get('failure_loss',.03)))
     recovery=round(10+len(after)*3+len(failed)*15,2) if after else None
     return {'before_path':before,'after_path':after,'failed_nodes':failed,'packets_affected':lost,'recovery_time_ms':recovery,'converged':bool(after)}
 
@@ -164,6 +165,214 @@ def explain(payload:dict):
     else: answer='Use the topology, route, metrics and event evidence supplied with the question to inspect the current network state.'
     return {'answer':answer,'evidence':evidence,'grounded':bool(evidence),'model':'CiscoNetX-Grounded-Router'}
 
+
+
+def _optional_llm_tutor(question: str, fallback: dict) -> dict:
+    """Use an OpenAI-compatible endpoint when configured, otherwise stay offline."""
+    if not (settings.ai_base_url and settings.ai_model):
+        return fallback
+    try:
+        import httpx
+        headers = {'Content-Type': 'application/json'}
+        if settings.ai_api_key:
+            headers['Authorization'] = f'Bearer {settings.ai_api_key}'
+        prompt = (
+            'You are a Computer Networks lab teacher. Return JSON only with keys '
+            'lab_name, objective, steps, commands, expected_results, hints, viva_questions. '
+            'Keep steps practical for a student using CiscoNetX. Do not invent packet captures or real devices. '
+            f'Question: {question}'
+        )
+        with httpx.Client(timeout=settings.ai_timeout_seconds) as client:
+            response = client.post(
+                settings.ai_base_url.rstrip('/') + '/chat/completions',
+                headers=headers,
+                json={'model': settings.ai_model, 'temperature': 0.2, 'messages':[{'role':'user','content':prompt}]}
+            )
+            response.raise_for_status()
+            body = response.json()
+            content = body['choices'][0]['message']['content']
+            if content.startswith('```'):
+                content = content.split('\n',1)[1].rsplit('```',1)[0]
+            data = json.loads(content)
+            for key in ('lab_name','objective','steps','commands','expected_results','hints','viva_questions'):
+                if key not in data:
+                    return fallback
+            return {**fallback, **data, 'mode':'llm', 'grounded':True}
+    except Exception:
+        return fallback
+
+@router.post('/assistant/tutor')
+def assistant_tutor(payload: dict):
+    """Student-facing CN lab coach.
+
+    Works offline with a curriculum engine and accepts an optional external
+    LLM adapter later. It returns structured lab guidance instead of a raw
+    paragraph so the UI can turn the answer into an executable lab.
+    """
+    question = str(payload.get('question', '')).strip()
+    if not question:
+        raise HTTPException(422, 'Enter the lab question first')
+    if len(question) > 8000:
+        raise HTTPException(422, 'Question is limited to 8000 characters')
+
+    q = question.lower()
+    topics: list[str] = []
+    if any(x in q for x in ('rip', 'distance vector')):
+        topics.append('RIP / Distance Vector')
+    if any(x in q for x in ('ospf', 'link state')):
+        topics.append('OSPF / Link State')
+    if any(x in q for x in ('dijkstra', 'shortest path', 'shortest-path', 'routing')):
+        topics.append('Routing / Dijkstra')
+    if any(x in q for x in ('subnet', 'cidr', 'ipv4', 'ip address')):
+        topics.append('IPv4 / Subnetting')
+    if any(x in q for x in ('tcp', 'three-way', 'handshake', 'congestion', 'slow start')):
+        topics.append('TCP / Transport')
+    if any(x in q for x in ('udp',)):
+        topics.append('UDP / Transport')
+    if any(x in q for x in ('arp',)):
+        topics.append('ARP')
+    if any(x in q for x in ('nat', 'pat')):
+        topics.append('NAT / PAT')
+    if any(x in q for x in ('vlan', 'trunk', '802.1q')):
+        topics.append('VLAN / Switching')
+    if any(x in q for x in ('crc', 'checksum', 'hamming')):
+        topics.append('Error Detection / Correction')
+    if any(x in q for x in ('go-back-n', 'selective repeat', 'stop-and-wait', 'sliding window', 'arq')):
+        topics.append('ARQ / Data Link')
+    if any(x in q for x in ('csma', 'aloha', 'collision')):
+        topics.append('MAC / Random Access')
+    if any(x in q for x in ('dns', 'http', 'https', 'application layer')):
+        topics.append('Application Protocols')
+    if any(x in q for x in ('firewall', 'ddos', 'port scan', 'security', 'attack')):
+        topics.append('Network Security')
+    if not topics:
+        topics.append('Computer Networks Fundamentals')
+
+    if any(x in q for x in ('rip', 'distance vector')):
+        lab_name = 'RIP routing convergence lab'
+        objective = 'Build a small routed network, configure RIP-style distance-vector routing, then observe route learning and convergence.'
+        steps = [
+            'Build PC-01 → RTR-01 → RTR-02 → PC-02.',
+            'Assign one IPv4 subnet to each router-facing link and one LAN per router.',
+            'Enable RIP on both routers and advertise the connected networks.',
+            'Run the routing analysis and inspect the learned next hop and path cost.',
+            'Break the inter-router link, restore it, and compare convergence behavior.'
+        ]
+        commands = ['enable', 'configure terminal', 'router rip', 'version 2', 'network 10.0.0.0', 'network 10.0.1.0', 'no auto-summary', 'end', 'show ip route']
+        expected = ['Both routers learn the remote LAN.', 'The routing table shows a learned route.', 'Traffic reaches the destination before and after recovery.']
+        topology = _student_topology('rip')
+    elif any(x in q for x in ('ospf', 'link state')):
+        lab_name = 'OSPF link-state lab'
+        objective = 'Build a routed topology and inspect shortest-path selection and link-state convergence.'
+        steps = ['Build three routers in a triangle.', 'Assign IPv4 addresses to every routed link.', 'Enable OSPF area 0 on all routers.', 'Run the routing analysis and compare primary and alternate paths.', 'Disable one link and observe the new shortest path.']
+        commands = ['enable', 'configure terminal', 'router ospf 1', 'network 10.0.0.0 0.0.0.255 area 0', 'end', 'show ip ospf neighbor', 'show ip route ospf']
+        expected = ['OSPF neighbors reach FULL state.', 'Routes are learned through OSPF.', 'Traffic moves over the alternate path after a failure.']
+        topology = _student_topology('ospf')
+    elif any(x in q for x in ('subnet', 'cidr')):
+        lab_name = 'IPv4 subnetting lab'
+        objective = 'Calculate subnet boundaries, host ranges and broadcast addresses, then verify them in CiscoNetX.'
+        steps = ['Identify the required number of subnets or hosts.', 'Choose the new prefix length.', 'Calculate network, first host, last host and broadcast for each subnet.', 'Enter the addresses into the topology.', 'Use the IP workspace to verify the calculation.']
+        commands = []
+        expected = ['Every subnet has a unique network address.', 'Usable host ranges do not overlap.', 'Broadcast addresses match the selected prefix.']
+        topology = _student_topology('ip')
+    elif any(x in q for x in ('tcp', 'three-way', 'handshake', 'congestion', 'slow start')):
+        lab_name = 'TCP transport lab'
+        objective = 'Observe TCP connection establishment, acknowledgements, retransmission and congestion-window behavior.'
+        steps = ['Create a client and server path.', 'Run the Transport workspace.', 'Identify SYN, SYN-ACK and ACK.', 'Introduce packet loss.', 'Compare retransmissions and congestion-window changes.']
+        commands = []
+        expected = ['The three-way handshake reaches ESTABLISHED.', 'Loss causes retransmission behavior.', 'Congestion control reduces the sending window after loss.']
+        topology = _student_topology('tcp')
+    elif any(x in q for x in ('go-back-n', 'selective repeat', 'stop-and-wait', 'sliding window', 'arq')):
+        lab_name = 'ARQ and sliding-window lab'
+        objective = 'Compare reliable data-link protocols under deterministic frame loss.'
+        steps = ['Open Data Link.', 'Select the ARQ protocol from the question.', 'Use a fixed frame count and window size.', 'Introduce a lost frame.', 'Compare retransmitted frames and delivery efficiency.']
+        commands = []
+        expected = ['Go-Back-N retransmits from the lost frame onward.', 'Selective Repeat retransmits only missing frames.', 'Stop-and-Wait sends one frame before waiting for acknowledgement.']
+        topology = _student_topology('arq')
+    elif any(x in q for x in ('vlan', 'trunk', '802.1q')):
+        lab_name = 'VLAN segmentation lab'
+        objective = 'Create isolated broadcast domains and verify access/trunk behavior.'
+        steps = ['Add two switches and hosts.', 'Assign hosts to different VLANs.', 'Connect switches with a trunk.', 'Verify same-VLAN forwarding.', 'Test cross-VLAN traffic and explain why a router or Layer-3 switch is required.']
+        commands = ['enable', 'configure terminal', 'vlan 10', 'name STUDENTS', 'vlan 20', 'name FACULTY', 'interface gigabitEthernet 0/1', 'switchport mode trunk', 'end', 'show vlan brief']
+        expected = ['Hosts in the same VLAN communicate at Layer 2.', 'Different VLANs remain isolated without Layer-3 routing.', 'The trunk carries tagged VLAN traffic.']
+        topology = _student_topology('vlan')
+    else:
+        lab_name = 'Computer Networks guided lab'
+        objective = 'Turn the teacher question into a repeatable topology, simulation and verification workflow.'
+        steps = ['Identify the protocol or layer involved.', 'Build the smallest topology needed to reproduce the question.', 'Configure addressing and protocol behavior.', 'Run the matching CiscoNetX workspace.', 'Inspect the evidence and write the observation and conclusion.']
+        commands = []
+        expected = ['The topology matches the question.', 'The simulation produces observable protocol behavior.', 'The final answer is supported by simulation evidence.']
+        topology = _student_topology('generic')
+
+    hints = [
+        'Start with the smallest topology needed for the question.',
+        'Use deterministic seed 42 so your result is repeatable.',
+        'Change one variable at a time when testing a failure or protocol behavior.',
+        'In your lab record, write the setup, input, observation and conclusion.'
+    ]
+    viva = [
+        f'Which OSI/TCP-IP layer does {topics[0]} belong to?',
+        'What changes when one link or device fails?',
+        'Which evidence in the simulator proves your answer?'
+    ]
+    fallback = {
+        'assistant': 'CiscoNetX AI Lab Coach',
+        'lab_name': lab_name,
+        'topics': topics,
+        'objective': objective,
+        'steps': steps,
+        'commands': commands,
+        'expected_results': expected,
+        'hints': hints,
+        'viva_questions': viva,
+        'topology': topology,
+        'mode': 'offline-curriculum',
+        'grounded': True,
+    }
+    return _optional_llm_tutor(question, fallback)
+
+
+def _student_topology(kind: str) -> dict:
+    if kind in ('rip', 'tcp', 'ip'):
+        return {
+            'nodes': [
+                {'id':'pc1','name':'PC-01','type':'host','ip':'10.0.0.10','x':10,'y':50},
+                {'id':'r1','name':'RTR-01','type':'router','ip':'10.0.0.1','x':35,'y':50},
+                {'id':'r2','name':'RTR-02','type':'router','ip':'10.0.1.1','x':65,'y':50},
+                {'id':'pc2','name':'PC-02','type':'host','ip':'10.0.1.10','x':90,'y':50},
+            ],
+            'links': [
+                {'id':'l1','source':'pc1','target':'r1','bandwidth_mbps':100,'latency_ms':1,'up':True},
+                {'id':'l2','source':'r1','target':'r2','bandwidth_mbps':100,'latency_ms':5,'up':True},
+                {'id':'l3','source':'r2','target':'pc2','bandwidth_mbps':100,'latency_ms':1,'up':True},
+            ]
+        }
+    if kind == 'ospf':
+        return {
+            'nodes': [
+                {'id':'r1','name':'RTR-01','type':'router','ip':'10.0.0.1','x':25,'y':35},
+                {'id':'r2','name':'RTR-02','type':'router','ip':'10.0.1.1','x':75,'y':35},
+                {'id':'r3','name':'RTR-03','type':'router','ip':'10.0.2.1','x':50,'y':70},
+            ],
+            'links': [
+                {'id':'l1','source':'r1','target':'r2','bandwidth_mbps':100,'latency_ms':5,'up':True},
+                {'id':'l2','source':'r2','target':'r3','bandwidth_mbps':100,'latency_ms':5,'up':True},
+                {'id':'l3','source':'r1','target':'r3','bandwidth_mbps':100,'latency_ms':10,'up':True},
+            ]
+        }
+    return {
+        'nodes': [
+            {'id':'pc1','name':'PC-01','type':'host','ip':'10.0.0.10','x':15,'y':50},
+            {'id':'sw1','name':'SW-01','type':'switch','vlan':10,'x':40,'y':50},
+            {'id':'r1','name':'RTR-01','type':'router','ip':'10.0.0.1','x':65,'y':50},
+            {'id':'server1','name':'SERVER-01','type':'server','ip':'10.0.1.10','x':90,'y':50},
+        ],
+        'links': [
+            {'id':'l1','source':'pc1','target':'sw1','bandwidth_mbps':100,'latency_ms':1,'up':True},
+            {'id':'l2','source':'sw1','target':'r1','bandwidth_mbps':1000,'latency_ms':2,'up':True},
+            {'id':'l3','source':'r1','target':'server1','bandwidth_mbps':100,'latency_ms':3,'up':True},
+        ]
+    }
 
 @router.post('/replay/validate')
 def replay_validate(payload:dict):

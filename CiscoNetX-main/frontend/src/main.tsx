@@ -6,6 +6,7 @@ type Node = { id:string; name:string; type:string; ip?:string; mac?:string; vlan
 type Link = { id:string; source:string; target:string; bandwidth_mbps:number; latency_ms:number; jitter_ms?:number; loss_rate?:number; up:boolean };
 type Topology = { nodes:Node[]; links:Link[] };
 type Result = Record<string, any> | undefined;
+type TutorResult = {assistant:string;lab_name:string;topics:string[];objective:string;steps:string[];commands:string[];expected_results:string[];hints:string[];viva_questions:string[];topology:Topology;mode:string;grounded:boolean};
 
 const API = (import.meta.env.VITE_API_URL || '').replace(/\/$/, '');
 const tabs = ['NOC','Topology','Routing','Packets','Data Link','IP','Transport','Protocols','Security','Telemetry','AI / ML','Experiments','Replay','Reports','Automation'];
@@ -129,6 +130,11 @@ function App(){
   const [notice,setNotice]=useState('System ready. Select a workspace to begin.');
   const [runError,setRunError]=useState('');
   const [lastRun,setLastRun]=useState('');
+  const [assistantOpen,setAssistantOpen]=useState(false);
+  const [assistantQuestion,setAssistantQuestion]=useState('');
+  const [assistantBusy,setAssistantBusy]=useState(false);
+  const [assistantResult,setAssistantResult]=useState<TutorResult>();
+  const [simulationMode,setSimulationMode]=useState<'realtime'|'simulation'>('simulation');
 
   useEffect(()=>{api('/health').then(()=>setOnline(true)).catch(()=>setOnline(false));const ws=API ? API.replace(/^http/,'ws')+'/ws/events' : `${location.protocol==='https:'?'wss':'ws'}://${location.host}/ws/events`;let s:WebSocket|undefined;try{s=new WebSocket(ws);s.onopen=()=>setOnline(true);s.onclose=()=>setOnline(false)}catch{}return()=>s?.close()},[]);
   const path=out?.after_path||out?.final_path||out?.path||out?.route||[];
@@ -140,7 +146,7 @@ function App(){
     setBusy(true);setRunError('');setNotice(`Running ${tabMeta[tab].title}…`);
     try{let x:any;
       switch(tab){
-        case'NOC':case'Routing':x=await api('/api/v1/enterprise/routing/convergence',{method:'POST',body:JSON.stringify({topology:t,source:'pc1',destination:'server1',failed_nodes:tab==='NOC'?['r2']:[],packets:100})});break;
+        case'NOC':case'Routing':case'Topology':x=await api('/api/v1/enterprise/routing/convergence',{method:'POST',body:JSON.stringify({topology:t,baseline_topology:{...t,links:t.links.map(l=>({...l,up:true}))},source:'pc1',destination:'server1',failed_nodes:tab==='NOC'?['r2']:[],packets:100})});break;
         case'Packets':x=await api('/api/v1/lab/packet-trace?source=pc1&destination=server1&count=40&seed=42',{method:'POST',body:JSON.stringify(t)});break;
         case'Data Link':x=await api('/api/v1/lab/sliding-window?frames=12&window=4&loss=.15&selective=true&seed=42',{method:'POST'});break;
         case'IP':x=await api('/api/v1/lab/subnet?network=10.20.0.0&prefix=24',{method:'POST'});break;
@@ -158,6 +164,19 @@ function App(){
       setOut(x);setLastRun(new Date().toLocaleTimeString());setNotice(`${tabMeta[tab].title} completed successfully.`);
     }catch(e:any){const message=e?.name==='AbortError'?'Request timed out after 15 seconds.':(e?.message||'Execution failed.');setRunError(message);setNotice(`Analysis failed: ${message}`);}finally{setBusy(false)}
   };
+  const askTutor=async()=>{
+    if(!assistantQuestion.trim()) return;
+    setAssistantBusy(true);
+    try{
+      const x=await api('/api/v1/enterprise/assistant/tutor',{method:'POST',body:JSON.stringify({question:assistantQuestion})});
+      setAssistantResult(x);
+      setNotice('AI Lab Coach prepared a guided lab.');
+    }catch(e:any){setNotice(`AI Lab Coach failed: ${e?.message||'Request failed'}`)}
+    finally{setAssistantBusy(false)}
+  };
+  const applyTutorTopology=()=>{if(assistantResult?.topology){setT(assistantResult.topology);setTab('Topology');setOut(undefined);setNotice('Lab topology loaded. Follow the AI Lab Coach steps.')}};
+  const openTutor=()=>{setAssistantOpen(true);if(!assistantQuestion)setAssistantQuestion('Configure a small RIP network between two routers and verify route convergence after a link failure.');};
+
   const add=(type:string)=>setT(v=>({...v,nodes:[...v.nodes,{id:`${type}-${Date.now()}`,name:type==='firewall'?'EDGE-FW':type.toUpperCase(),type,x:48,y:20+Math.random()*60}]}));
   const removeSelected=()=>setT(v=>({...v,nodes:v.nodes.filter(n=>n.id!==selected),links:v.links.filter(l=>l.source!==selected&&l.target!==selected)}));
   const connectSelected=()=>{const target=t.nodes.find(n=>n.id!==selected);if(!target)return;setT(v=>({...v,links:[...v.links,{id:`l-${Date.now()}`,source:selected,target:target.id,bandwidth_mbps:100,latency_ms:5,up:true}]}))};
@@ -171,12 +190,13 @@ function App(){
       <div className="sidebarFoot"><span>DETERMINISTIC ENGINE</span><b>SEED 42</b><small>V6 ENTERPRISE SIMULATION</small></div>
     </aside>
     <main>
-      <header className="topbar"><div><div className="breadcrumb">CISCONETX <span>/</span> {tabMeta[tab].group}</div><h1>{tabMeta[tab].title}</h1></div><div className="headerActions"><div className="connection"><StatusDot ok={online}/>{online?'Connected':'Offline'}</div><button className="runBtn" onClick={run} disabled={busy}>{busy?'RUNNING…':'RUN ANALYSIS'}</button></div></header>
+      <header className="topbar"><div><div className="breadcrumb">CISCONETX <span>/</span> {tabMeta[tab].group}</div><h1>{tabMeta[tab].title}</h1></div><div className="headerActions"><div className="connection"><StatusDot ok={online}/>{online?'Connected':'Offline'}</div><button className="coachBtn" onClick={openTutor}>AI LAB COACH</button><button className="runBtn" onClick={run} disabled={busy}>{busy?'RUNNING…':'RUN ANALYSIS'}</button></div></header>
       <div className="notice"><span className="noticeMark">●</span>{notice}<span className="seed">Experiment seed 42</span></div>
       <div className="content">
-        {tab==='NOC'?<NocView t={t} path={path} out={out} activeLinks={activeLinks} avgLatency={avgLatency} setSelected={setSelected}/>:<Workspace tab={tab} t={t} setT={setT} path={path} node={node} selected={selected} setSelected={setSelected} out={out} add={add} connectSelected={connectSelected} removeSelected={removeSelected}/>} 
+        {tab==='NOC'?<NocView t={t} path={path} out={out} activeLinks={activeLinks} avgLatency={avgLatency} setSelected={setSelected}/>:<Workspace tab={tab} t={t} setT={setT} path={path} node={node} selected={selected} setSelected={setSelected} out={out} runError={runError} lastRun={lastRun} add={add} connectSelected={connectSelected} removeSelected={removeSelected} simulationMode={simulationMode} setSimulationMode={setSimulationMode}/>}
       </div>
     </main>
+    {assistantOpen&&<TutorPanel question={assistantQuestion} setQuestion={setAssistantQuestion} busy={assistantBusy} result={assistantResult} onAsk={askTutor} onApply={applyTutorTopology} onClose={()=>setAssistantOpen(false)}/>}
   </div>;
 }
 
@@ -202,23 +222,23 @@ function LineChart({values}:{values:number[]}){const w=640,h=180,min=Math.min(..
 function RouteRow({name,path,value,ok}:{name:string;path:string;value:string;ok:boolean}){return <div className="routeRow"><StatusDot ok={ok}/><div><b>{name}</b><span>{path}</span></div><strong>{value}</strong></div>}
 function Signal({title,text,ok}:{title:string;text:string;ok:boolean}){return <div className="signal"><StatusDot ok={ok}/><div><b>{title}</b><span>{text}</span></div><em>{ok?'PASS':'WAIT'}</em></div>}
 
-function Workspace({tab,t,setT,path,node,selected,setSelected,out,add,connectSelected,removeSelected}:{tab:string;t:Topology;setT:React.Dispatch<React.SetStateAction<Topology>>;path:string[];node?:Node;selected:string;setSelected:(x:string)=>void;out:Result;add:(x:string)=>void;connectSelected:()=>void;removeSelected:()=>void}){
+function Workspace({tab,t,setT,path,node,selected,setSelected,out,runError,lastRun,add,connectSelected,removeSelected,simulationMode,setSimulationMode}:{tab:string;t:Topology;setT:React.Dispatch<React.SetStateAction<Topology>>;path:string[];node?:Node;selected:string;setSelected:(x:string)=>void;out:Result;runError:string;lastRun:string;add:(x:string)=>void;connectSelected:()=>void;removeSelected:()=>void;simulationMode:'realtime'|'simulation';setSimulationMode:(x:'realtime'|'simulation')=>void}){
   const meta=tabMeta[tab];
   return <>
     <SectionTitle eyebrow={meta.group} title={meta.title} desc={meta.desc}/>
-    {tab==='Topology'&&<TopologyWorkspace t={t} setT={setT} node={node} selected={selected} setSelected={setSelected} add={add} connectSelected={connectSelected} removeSelected={removeSelected} path={path}/>} 
-    {tab!=='Topology'&&<AnalysisWorkspace tab={tab} out={out} path={path} t={t}/>} 
+    {tab==='Topology'&&<TopologyWorkspace t={t} setT={setT} node={node} selected={selected} setSelected={setSelected} add={add} connectSelected={connectSelected} removeSelected={removeSelected} path={path} out={out} simulationMode={simulationMode} setSimulationMode={setSimulationMode}/>} 
+    {tab!=='Topology'&&<AnalysisWorkspace tab={tab} out={out} path={path} t={t} runError={runError} lastRun={lastRun}/>} 
   </>;
 }
 
-function TopologyWorkspace({t,setT,node,selected,setSelected,add,connectSelected,removeSelected,path}:{t:Topology;setT:React.Dispatch<React.SetStateAction<Topology>>;node?:Node;selected:string;setSelected:(x:string)=>void;add:(x:string)=>void;connectSelected:()=>void;removeSelected:()=>void;path:string[]}){
+function TopologyWorkspace({t,setT,node,selected,setSelected,add,connectSelected,removeSelected,path,out,simulationMode,setSimulationMode}:{t:Topology;setT:React.Dispatch<React.SetStateAction<Topology>>;node?:Node;selected:string;setSelected:(x:string)=>void;add:(x:string)=>void;connectSelected:()=>void;removeSelected:()=>void;path:string[];out:Result;simulationMode:'realtime'|'simulation';setSimulationMode:(x:'realtime'|'simulation')=>void}){
   return <div className="topologyStudio">
-    <div className="studioToolbar"><div><b>Topology canvas</b><span>Click a device to inspect or edit it.</span></div><div className="toolbarBtns"><button onClick={()=>add('router')}>+ Router</button><button onClick={()=>add('switch')}>+ Switch</button><button onClick={()=>add('firewall')}>+ Firewall</button><button onClick={connectSelected}>Connect</button><button className="dangerBtn" onClick={removeSelected}>Delete</button></div></div>
-    <div className="studioGrid"><Card title="CANVAS" subtitle={`${t.nodes.length} devices · ${t.links.length} links`}><Topology t={t} path={path} onNode={setSelected}/></Card><div className="inspector"><Card title="DEVICE INSPECTOR" subtitle={node?.name||'No device selected'}>{node?<div className="form"><label>Hostname<input value={node.name} onChange={e=>setT(v=>({...v,nodes:v.nodes.map(n=>n.id===selected?{...n,name:e.target.value}:n)}))}/></label><label>IP address<input value={node.ip||''} onChange={e=>setT(v=>({...v,nodes:v.nodes.map(n=>n.id===selected?{...n,ip:e.target.value}:n)}))}/></label><label>VLAN<input type="number" value={node.vlan||1} onChange={e=>setT(v=>({...v,nodes:v.nodes.map(n=>n.id===selected?{...n,vlan:Number(e.target.value)}:n)}))}/></label><div className="deviceMeta"><span>Type <b>{node.type}</b></span><span>ID <b>{node.id}</b></span></div></div>:<div className="empty">Select a device on the canvas.</div>}</Card><Card title="LINK CONTROL" subtitle="Toggle simulated failures"><div className="linkList">{t.links.map(l=><button key={l.id} onClick={()=>setT(v=>({...v,links:v.links.map(x=>x.id===l.id?{...x,up:!x.up}:x)}))}><span><i className={`linkState ${l.up?'up':'down'}`}/>{l.id}</span><small>{l.source} → {l.target}</small><b>{l.up?'UP':'DOWN'}</b></button>)}</div></Card></div></div>
+    <div className="studioToolbar"><div><b>Logical workspace</b><span>Build, configure, simulate and verify like a student CN lab.</span></div><div className="toolbarBtns"><button onClick={()=>add('router')}>+ Router</button><button onClick={()=>add('switch')}>+ Switch</button><button onClick={()=>add('host')}>+ PC</button><button onClick={()=>add('firewall')}>+ Firewall</button><button onClick={connectSelected}>Cable</button><button className={simulationMode==='simulation'?'modeActive':''} onClick={()=>setSimulationMode('simulation')}>Simulation</button><button className={simulationMode==='realtime'?'modeActive':''} onClick={()=>setSimulationMode('realtime')}>Realtime</button><button className="dangerBtn" onClick={removeSelected}>Delete</button></div></div>
+    <div className="studioGrid"><div className="labCanvasColumn"><Card title="LOGICAL TOPOLOGY" subtitle={`${t.nodes.length} devices · ${t.links.length} links`}><Topology t={t} path={path} onNode={setSelected}/></Card><Card title="SIMULATION EVENT LOG" subtitle={simulationMode==='simulation'?'Step-oriented lab evidence':'Live-style network view'}><div className="eventLog">{out?.before_path&&<div><b>ROUTE BASELINE</b><span>{out.before_path.join(' → ')}</span></div>}{out?.after_path&&<div><b>ROUTE AFTER CHANGE</b><span>{out.after_path.join(' → ')}</span></div>}{out?.packets_affected!==undefined&&<div><b>PACKETS AFFECTED</b><span>{out.packets_affected}</span></div>}{!out&&<div className="eventEmpty">Run analysis to generate simulation evidence.</div>}</div></Card></div><div className="inspector"><Card title="DEVICE INSPECTOR" subtitle={node?.name||'No device selected'}>{node?<div className="form"><label>Hostname<input value={node.name} onChange={e=>setT(v=>({...v,nodes:v.nodes.map(n=>n.id===selected?{...n,name:e.target.value}:n)}))}/></label><label>IP address<input value={node.ip||''} onChange={e=>setT(v=>({...v,nodes:v.nodes.map(n=>n.id===selected?{...n,ip:e.target.value}:n)}))}/></label><label>VLAN<input type="number" value={node.vlan||1} onChange={e=>setT(v=>({...v,nodes:v.nodes.map(n=>n.id===selected?{...n,vlan:Number(e.target.value)}:n)}))}/></label><div className="deviceMeta"><span>Type <b>{node.type}</b></span><span>ID <b>{node.id}</b></span></div></div>:<div className="empty">Select a device on the canvas.</div>}</Card><Card title="LAB GUIDE" subtitle="Student workflow"><div className="labGuide"><div><b>1. Build</b><span>Add devices and connect links.</span></div><div><b>2. Configure</b><span>Select a device and edit its IP/VLAN.</span></div><div><b>3. Simulate</b><span>Toggle a link DOWN and run analysis.</span></div><div><b>4. Explain</b><span>Use AI LAB COACH for the teacher question.</span></div></div></Card><Card title="ANALYSIS RESULT" subtitle="Routing and failure impact">{out ? <div className="context"><b>{out.converged ? 'Network converged successfully' : 'No recovery path available'}</b><span>Before: {(out.before_path||[]).join(' → ') || 'No path'}</span><span>After: {(out.after_path||[]).join(' → ') || 'No path'}</span><span>Packets affected: {out.packets_affected ?? 0} · Recovery: {out.recovery_time_ms ?? 'N/A'} ms</span></div> : <div className="empty">Click RUN ANALYSIS to calculate the current topology path and recovery result.</div>}</Card><Card title="LINK CONTROL" subtitle="Toggle simulated failures"><div className="linkList">{t.links.map(l=><button key={l.id} onClick={()=>setT(v=>({...v,links:v.links.map(x=>x.id===l.id?{...x,up:!x.up}:x)}))}><span><i className={`linkState ${l.up?'up':'down'}`}/>{l.id}</span><small>{l.source} → {l.target}</small><b>{l.up?'UP':'DOWN'}</b></button>)}</div></Card></div></div>
   </div>;
 }
 
-function AnalysisWorkspace({tab,out,path,t}:{tab:string;out:Result;path:string[];t:Topology}){const runError='';const lastRun='';
+function AnalysisWorkspace({tab,out,path,t,runError,lastRun}:{tab:string;out:Result;path:string[];t:Topology;runError:string;lastRun:string}){
   const rows=out?Object.entries(out):[['status','Press RUN ANALYSIS to execute this module']];
   const charts:Record<string,React.ReactNode>={
     Routing:<div className="analysisVisual"><div className="pathBanner"><span>SELECTED ROUTE</span><b>{path.length?path.join('  →  '):'Run analysis to calculate path'}</b></div><div className="barChart"><Bar label="Primary path" value={78}/><Bar label="Alternate path" value={56}/><Bar label="Link reserve" value={84}/></div></div>,
@@ -239,5 +259,23 @@ function AnalysisWorkspace({tab,out,path,t}:{tab:string;out:Result;path:string[]
 }
 const contextText:Record<string,string>={Routing:'Path selection, failure impact and convergence behavior.',Packets:'Packet forwarding and hop-by-hop inspection.', 'Data Link':'Flow control, framing and selective retransmission.',IP:'IPv4 subnetting, addressing and forwarding.',Transport:'TCP session establishment and reliable transport.',Protocols:'Application-layer protocol behavior and encapsulation.',Security:'Flow-level anomaly signals and operational security evidence.',Telemetry:'Network measurements translated into operational trends.','AI / ML':'Telemetry features used for deterministic model training and evaluation.',Experiments:'A repeatable experiment lifecycle for network scenarios.',Replay:'Reproducibility checks across equivalent experiment inputs.',Reports:'Evidence packaging for review, assessment and engineering records.',Automation:'Policy evaluation against utilization and latency thresholds.'};
 function Bar({label,value}:{label:string;value:number}){return <div className="barItem"><span>{label}</span><div><i style={{width:`${value}%`}}/></div><b>{value}%</b></div>}
+
+
+function TutorPanel({question,setQuestion,busy,result,onAsk,onApply,onClose}:{question:string;setQuestion:(x:string)=>void;busy:boolean;result?:TutorResult;onAsk:()=>void;onApply:()=>void;onClose:()=>void}){
+  return <aside className="tutorPanel">
+    <div className="tutorHead"><div><small>AI LEARNING MODE</small><h2>AI Lab Coach</h2><span>Paste the teacher's CN lab question. Get the setup, steps, commands, expected result and viva prep.</span></div><button onClick={onClose}>×</button></div>
+    <div className="tutorInput"><textarea value={question} onChange={e=>setQuestion(e.target.value)} placeholder="Example: Configure RIP between two routers and verify convergence after a link failure."/><button onClick={onAsk} disabled={busy||!question.trim()}>{busy?'THINKING…':'SOLVE LAB QUESTION'}</button></div>
+    {result&&<div className="tutorBody">
+      <div className="tutorBadge"><b>{result.lab_name}</b><span>{result.mode} · grounded curriculum</span></div>
+      <section><small>TOPICS</small><div className="topicChips">{result.topics.map(x=><em key={x}>{x}</em>)}</div></section>
+      <section><small>WHAT YOU NEED TO DO</small><p>{result.objective}</p><ol>{result.steps.map((x,i)=><li key={i}>{x}</li>)}</ol></section>
+      {result.commands.length>0&&<section><small>ROUTER / SWITCH CLI</small><pre>{result.commands.join('\n')}</pre></section>}
+      <section><small>EXPECTED RESULT</small><ul>{result.expected_results.map((x,i)=><li key={i}>{x}</li>)}</ul></section>
+      <section><small>HINTS</small><ul>{result.hints.map((x,i)=><li key={i}>{x}</li>)}</ul></section>
+      <section><small>VIVA QUESTIONS</small><ul>{result.viva_questions.map((x,i)=><li key={i}>{x}</li>)}</ul></section>
+      <button className="applyLabBtn" onClick={onApply}>LOAD THIS LAB INTO TOPOLOGY</button>
+    </div>}
+  </aside>;
+}
 
 createRoot(document.getElementById('root')!).render(<App/>);
