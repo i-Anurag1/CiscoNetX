@@ -1,0 +1,1 @@
+{"name":"Enterprise Failover","seed":42,"source":"pc1","destination":"server1","description":"Generate traffic, fail router r2, recompute path, and measure recovery.","expected":"A new path through r3 is selected after r2 fails."}

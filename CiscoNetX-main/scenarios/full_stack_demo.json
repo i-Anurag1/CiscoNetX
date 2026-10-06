@@ -1,0 +1,1 @@
+{"name":"Full Stack Enterprise Recovery","seed":42,"source":"pc1","destination":"server1","packets":250,"steps":["validate topology","compute OSPF path","generate TCP and UDP flows","inspect packet trace","introduce congestion","fail router R2","recompute route","detect security anomaly","score telemetry","generate report"]}
