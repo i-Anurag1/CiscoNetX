@@ -55,28 +55,74 @@ def tcp_state_machine(loss: float=.1, rounds: int=24, seed: int=42) -> dict:
     return {"protocol":"TCP","events":states,"retransmissions":retrans,"final_cwnd":round(cwnd,3)}
 
 
-def arq(protocol:str, frames:int=12, window:int=4, losses: list[int]|None=None, seed:int=42):
-    losses=set(losses or [3]); events=[]; delivered=set(); sent_once=set(); next_seq=0; attempts=0
-    while len(delivered)<frames and attempts<frames*8:
-        attempts+=1
-        if protocol=='stop_and_wait':
-            batch=[next_seq] if next_seq<frames else []
-        else:
-            batch=[s for s in range(next_seq,min(frames,next_seq+window)) if s not in delivered]
-        if not batch: break
-        for seq in batch:
-            events.append({'action':'SEND','seq':seq})
-            if seq in losses and seq not in sent_once:
-                sent_once.add(seq); events.append({'action':'LOSS','seq':seq}); continue
-            events.append({'action':'ACK','seq':seq}); delivered.add(seq)
-        if protocol=='go_back_n':
-            missing=[s for s in batch if s not in delivered]
-            if missing:
-                for seq in batch[batch.index(missing[0]):]: events.append({'action':'RETRANSMIT','seq':seq})
-        next_seq=min(frames, max(delivered)+1 if delivered else next_seq)
-        if next_seq>=frames and len(delivered)<frames: next_seq=min(delivered or {0})
-    return {'protocol':protocol,'frames':frames,'window':window,'events':events,'delivered':sorted(delivered),'complete':len(delivered)==frames}
+def arq(protocol: str, frames: int = 12, window: int = 4, losses: list[int] | None = None, seed: int = 42):
+    if protocol not in ("stop_and_wait", "go_back_n", "selective_repeat"):
+        raise ValueError("Unsupported ARQ protocol")
+    if not 1 <= frames <= 10000 or not 1 <= window <= frames:
+        raise ValueError("frames must be 1..10000 and window must be 1..frames")
 
+    lost_frames = set([3] if losses is None else losses)
+    if any(not isinstance(seq, int) or seq < 0 or seq >= frames for seq in lost_frames):
+        raise ValueError("Loss indices must refer to valid frame sequence numbers")
+
+    events = []
+    delivered = set()
+    failed_once = set()
+    base = 0
+
+    def transmit(seq, retransmission=False):
+        action = "RETRANSMIT" if retransmission else "SEND"
+        events.append({"action": action, "seq": seq})
+        if seq in lost_frames and seq not in failed_once:
+            failed_once.add(seq)
+            events.append({"action": "LOSS", "seq": seq})
+            return False
+        events.append({"action": "ACK", "seq": seq})
+        return True
+
+    while base < frames:
+        if protocol == "stop_and_wait":
+            if not transmit(base):
+                transmit(base, True)
+            delivered.add(base)
+            base += 1
+            continue
+
+        end = min(frames, base + window)
+        if protocol == "selective_repeat":
+            for seq in range(base, end):
+                if seq not in delivered and transmit(seq):
+                    delivered.add(seq)
+            for seq in range(base, end):
+                if seq not in delivered:
+                    if transmit(seq, True):
+                        delivered.add(seq)
+        else:
+            batch = list(range(base, end))
+            first_missing = None
+            for seq in batch:
+                if not transmit(seq):
+                    first_missing = seq
+                    break
+                delivered.add(seq)
+            if first_missing is not None:
+                for seq in batch[batch.index(first_missing) + 1:]:
+                    events.append({"action": "DISCARD", "seq": seq})
+                for seq in range(first_missing, end):
+                    if transmit(seq, True):
+                        delivered.add(seq)
+
+        while base in delivered:
+            base += 1
+
+    return {
+        "protocol": protocol,
+        "frames": frames,
+        "window": window,
+        "events": events,
+        "delivered": sorted(delivered),
+        "complete": len(delivered) == frames,
+    }
 
 def medium_access(protocol:str, nodes:int=10, slots:int=200, offered_load:float=.3, seed:int=42):
     rng=random.Random(seed); success=collision=idle=0; attempts=0
