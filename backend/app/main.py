@@ -1,12 +1,13 @@
 import json, time, uuid
-from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Header
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconnect, Header, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import select
 from app.core.config import settings
 from app.db.session import Base, engine, get_db
 from app.models import Project, SimulationRun, SecurityIncident, AuditEvent, User
-from app.schemas.network import ProjectCreate, SimulationRequest, Topology, FirewallRule
+from app.schemas.network import ProjectCreate, SimulationRequest, Topology, FirewallRule, AuthRequest
 from app.simulation.engine import SimulationEngine, DEFAULT_TOPOLOGY
 from app.simulation.algorithms import dijkstra, routing_table, distance_vector, crc32_bits, checksum16, hamming_encode
 from app.simulation.protocols import hamming_decode, sliding_window, aloha, tcp_model
@@ -20,26 +21,59 @@ from app.simulation.flow import SDNController, traffic_simulation
 from app.networking import subnet, validate_topology
 from app.enterprise import router as enterprise_router
 
-Base.metadata.create_all(bind=engine)
-app=FastAPI(title='CiscoNetX API',version='6.0.0',description='Enterprise network simulation and NOC platform')
-app.add_middleware(CORSMiddleware,allow_origins=[x.strip() for x in settings.cors_origins.split(',')],allow_credentials=True,allow_methods=['*'],allow_headers=['*'])
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    if settings.is_production and (not settings.secret_key or len(settings.secret_key) < 32):
+        raise RuntimeError('SECRET_KEY must contain at least 32 characters in production')
+    if settings.is_production and settings.database_url.startswith('sqlite:///'):
+        raise RuntimeError('SQLite is not supported in production. Use PostgreSQL.')
+    yield
+
+app=FastAPI(title='CiscoNetX API',version=settings.app_version,description='Enterprise network simulation and NOC platform',docs_url='/docs' if not settings.is_production else None,redoc_url='/redoc' if not settings.is_production else None,lifespan=lifespan)
+app.add_middleware(CORSMiddleware,allow_origins=settings.cors_origin_list,allow_credentials=False,allow_methods=['GET','POST','PUT','OPTIONS'],allow_headers=['Authorization','Content-Type','X-Request-ID'])
 clients=set()
 app.include_router(enterprise_router)
+
+
+
+def current_user(authorization: str | None = Header(default=None)) -> dict:
+    if not authorization or not authorization.lower().startswith('bearer '):
+        raise HTTPException(status_code=401, detail='Bearer token required')
+    data = verify_token(authorization[7:].strip(), settings.secret_key)
+    if not data:
+        raise HTTPException(status_code=401, detail='Invalid or expired token')
+    return data
+
+def require_role(*roles: str):
+    def dependency(user: dict = Depends(current_user)):
+        if roles and user.get('role') not in roles:
+            raise HTTPException(status_code=403, detail='Insufficient permissions')
+        return user
+    return dependency
 
 def audit(db,pid,action,details): db.add(AuditEvent(project_id=pid,action=action,details=details)); db.commit()
 
 @app.post('/api/v1/auth/register')
-def register(email:str,password:str,db:Session=Depends(get_db)):
-    email=email.strip().lower()
-    if len(password)<10: raise HTTPException(422,'Password must contain at least 10 characters')
-    if db.scalar(select(User).where(User.email==email)): raise HTTPException(409,'User already exists')
-    u=User(email=email,password_hash=hash_password(password)); db.add(u); db.commit(); db.refresh(u)
+def register(payload: AuthRequest, db: Session = Depends(get_db)):
+    email = str(payload.email).strip().lower()
+    if db.scalar(select(User).where(User.email == email)):
+        raise HTTPException(409, 'User already exists')
+    try:
+        password_hash = hash_password(payload.password)
+    except ValueError as exc:
+        raise HTTPException(500, str(exc))
+    u = User(email=email, password_hash=password_hash)
+    db.add(u)
+    db.commit()
+    db.refresh(u)
     return {'id':u.id,'email':u.email,'role':u.role,'token':issue_token(u.id,u.role,settings.secret_key)}
 
 @app.post('/api/v1/auth/login')
-def login(email:str,password:str,db:Session=Depends(get_db)):
-    u=db.scalar(select(User).where(User.email==email.strip().lower()))
-    if not u or not verify_password(password,u.password_hash): raise HTTPException(401,'Invalid credentials')
+def login(payload: AuthRequest, db: Session = Depends(get_db)):
+    email = str(payload.email).strip().lower()
+    u = db.scalar(select(User).where(User.email == email))
+    if not u or not verify_password(payload.password, u.password_hash):
+        raise HTTPException(401, 'Invalid credentials')
     return {'id':u.id,'email':u.email,'role':u.role,'token':issue_token(u.id,u.role,settings.secret_key)}
 
 @app.get('/api/v1/auth/verify')
@@ -50,38 +84,40 @@ def verify(authorization:str|None=Header(default=None)):
     return {'valid':True,'user_id':data['sub'],'role':data['role']}
 
 @app.get('/health')
-def health(): return {'status':'ok','database':'ok','simulator':'ok','ml':'ready','version':'6.0.0'}
+def health():
+    return {'status':'ok','database':'configured','simulator':'ok','ml':'ready','version':settings.app_version,'environment':settings.environment}
+
 @app.get('/api/v1/topology/default')
 def default_topology(): return DEFAULT_TOPOLOGY
 @app.post('/api/v1/topology/validate')
 def topology_validate(topology:Topology): return validate_topology(topology.model_dump())
 @app.post('/api/v1/projects')
-def create_project(payload:ProjectCreate,db:Session=Depends(get_db)):
+def create_project(payload:ProjectCreate,db:Session=Depends(get_db),user:dict=Depends(require_role('engineer','admin'))):
     p=Project(name=payload.name,description=payload.description,topology=payload.topology.model_dump()); db.add(p); db.commit(); db.refresh(p); return {'id':p.id,'name':p.name,'description':p.description,'topology':p.topology}
 @app.get('/api/v1/projects')
-def projects(db:Session=Depends(get_db)): return [{'id':p.id,'name':p.name,'description':p.description,'created_at':p.created_at} for p in db.scalars(select(Project)).all()]
+def projects(db:Session=Depends(get_db),user:dict=Depends(current_user)): return [{'id':p.id,'name':p.name,'description':p.description,'created_at':p.created_at} for p in db.scalars(select(Project)).all()]
 @app.get('/api/v1/projects/{pid}')
-def project(pid:int,db:Session=Depends(get_db)):
+def project(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     p=db.get(Project,pid)
     if not p: raise HTTPException(404,'Project not found')
     return {'id':p.id,'name':p.name,'description':p.description,'topology':p.topology}
 @app.put('/api/v1/projects/{pid}/topology')
-def update_topology(pid:int,topology:Topology,db:Session=Depends(get_db)):
+def update_topology(pid:int,topology:Topology,db:Session=Depends(get_db),user:dict=Depends(require_role('engineer','admin'))):
     p=db.get(Project,pid)
     if not p: raise HTTPException(404,'Project not found')
     check=validate_topology(topology.model_dump())
     if not check['valid']: raise HTTPException(422,check)
     p.topology=topology.model_dump(); db.add(p); audit(db,pid,'TOPOLOGY_UPDATED',check); return p.topology
 @app.post('/api/v1/projects/{pid}/simulate')
-def simulate(pid:int,payload:SimulationRequest,db:Session=Depends(get_db)):
+def simulate(pid:int,payload:SimulationRequest,db:Session=Depends(get_db),user:dict=Depends(require_role('engineer','admin'))):
     p=db.get(Project,pid)
     if not p: raise HTTPException(404,'Project not found')
     result=SimulationEngine(payload.seed).run(json.loads(json.dumps(p.topology)),payload.scenario,payload.source,payload.destination,payload.packets)
     run=SimulationRun(project_id=pid,scenario=payload.scenario,seed=payload.seed,metrics=result['metrics'],events=result['events']); db.add(run); db.commit(); db.refresh(run); audit(db,pid,'SIMULATION_COMPLETED',{'run_id':run.id,'scenario':payload.scenario}); return {'run_id':run.id,**result}
 @app.get('/api/v1/projects/{pid}/runs')
-def runs(pid:int,db:Session=Depends(get_db)): return [{'id':r.id,'scenario':r.scenario,'seed':r.seed,'metrics':r.metrics,'created_at':r.created_at} for r in db.scalars(select(SimulationRun).where(SimulationRun.project_id==pid).order_by(SimulationRun.id.desc())).all()]
+def runs(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)): return [{'id':r.id,'scenario':r.scenario,'seed':r.seed,'metrics':r.metrics,'created_at':r.created_at} for r in db.scalars(select(SimulationRun).where(SimulationRun.project_id==pid).order_by(SimulationRun.id.desc())).all()]
 @app.get('/api/v1/projects/{pid}/runs/{rid}')
-def run_detail(pid:int,rid:int,db:Session=Depends(get_db)):
+def run_detail(pid:int,rid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     r=db.get(SimulationRun,rid)
     if not r or r.project_id!=pid: raise HTTPException(404,'Run not found')
     return {'id':r.id,'scenario':r.scenario,'seed':r.seed,'metrics':r.metrics,'events':r.events}
@@ -102,13 +138,18 @@ def hamming(data:str): return {'data':data,'encoded':hamming_encode(data)}
 @app.post('/api/v1/lab/hamming/decode')
 def hamming_dec(data:str): return hamming_decode(data)
 @app.post('/api/v1/lab/arq')
-def arq(protocol:str='go_back_n',frames:int=8,loss_index:int=3,window:int=4):
+def arq_route(protocol:str='go_back_n',frames:int=8,loss_index:int=3,window:int=4):
+    if not 1 <= frames <= 10000 or not 1 <= window <= frames or loss_index < 0 or loss_index >= frames: raise HTTPException(422,'Invalid ARQ parameters')
     if protocol not in ('go_back_n','selective_repeat','stop_and_wait'): raise HTTPException(400,'Unsupported ARQ protocol')
     return {'protocol':protocol,'window':window,'events':sliding_window(frames,window,[loss_index],protocol=='selective_repeat')}
 @app.post('/api/v1/lab/aloha')
-def aloha_api(nodes:int=10,slots:int=100,load:float=.3,slotted:bool=True): return aloha(nodes,slots,load,slotted)
+def aloha_api(nodes:int=10,slots:int=100,load:float=.3,slotted:bool=True):
+    if not 1 <= nodes <= 1000 or not 1 <= slots <= 10000 or not 0 <= load <= 1: raise HTTPException(422,'Invalid ALOHA parameters')
+    return aloha(nodes,slots,load,slotted)
 @app.post('/api/v1/lab/tcp')
-def tcp(loss:float=.1,rounds:int=20): return tcp_model(loss,rounds)
+def tcp(loss:float=.1,rounds:int=20):
+    if not 0 <= loss <= 1 or not 1 <= rounds <= 1000: raise HTTPException(422,'Invalid TCP parameters')
+    return tcp_model(loss,rounds)
 @app.post('/api/v1/lab/subnet')
 def subnet_api(network:str,prefix:int): return subnet(network,prefix)
 @app.post('/api/v1/lab/packet')
@@ -123,7 +164,9 @@ def tcp_handshake(): return {'protocol':'TCP','steps':['SYN','SYN-ACK','ACK'],'s
 @app.post('/api/v1/security/firewall/evaluate')
 def firewall(packet:dict,rules:list[FirewallRule]): return {'action':evaluate_acl(packet,[r.model_dump() for r in rules])}
 @app.post('/api/v1/security/detect')
-def detect(flows:list[dict]): return {'alerts':detect_anomalies(flows)}
+def detect(flows:list[dict]):
+    if len(flows)>10000: raise HTTPException(422,'At most 10000 flows are supported')
+    return {'alerts':detect_anomalies(flows)}
 @app.post('/api/v1/ml/score')
 def ml_score(features:dict): return score(features)
 @app.post('/api/v1/ml/evaluate')
@@ -133,16 +176,24 @@ def scenarios():
     names=['enterprise_failover','router_failure','crc','hamming','checksum','tcp_congestion','ddos','vlan_segmentation','arp_resolution','nat_translation','ospf_convergence','dns_http','port_scan','congestion','full_stack_demo']
     return [{'id':x,'name':x.replace('_',' ').title()} for x in names]
 @app.post('/api/v1/projects/{pid}/export')
-def export_project(pid:int,db:Session=Depends(get_db)):
+def export_project(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     p=db.get(Project,pid)
     if not p: raise HTTPException(404,'Project not found')
     return {'project':{'id':p.id,'name':p.name,'description':p.description},'topology':p.topology,'runs':[{'id':r.id,'scenario':r.scenario,'metrics':r.metrics,'events':r.events} for r in db.scalars(select(SimulationRun).where(SimulationRun.project_id==pid)).all()]}
 @app.websocket('/ws/events')
-async def ws(websocket:WebSocket):
-    await websocket.accept(); clients.add(websocket)
+async def ws(websocket: WebSocket):
+    origin = websocket.headers.get('origin')
+    if origin and origin not in settings.cors_origin_list:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return
+    await websocket.accept()
+    clients.add(websocket)
     try:
-        while True: await websocket.receive_text()
-    except WebSocketDisconnect: clients.discard(websocket)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        clients.discard(websocket)
+
 
 @app.post('/api/v1/lab/csma')
 def csma(nodes:int=10,slots:int=100,offered_load:float=.4,cd:bool=True):
@@ -237,11 +288,11 @@ def protocols():
     }
 
 @app.get('/api/v1/projects/{pid}/audit')
-def audit_log(pid:int,db:Session=Depends(get_db)):
+def audit_log(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     return [{'id':x.id,'action':x.action,'details':x.details,'created_at':x.created_at} for x in db.scalars(select(AuditEvent).where(AuditEvent.project_id==pid).order_by(AuditEvent.id.desc())).all()]
 
 @app.get('/api/v1/projects/{pid}/incidents')
-def incidents(pid:int,db:Session=Depends(get_db)):
+def incidents(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     return [{'id':x.id,'kind':x.kind,'severity':x.severity,'source':x.source,'destination':x.destination,'evidence':x.evidence,'action':x.action,'created_at':x.created_at} for x in db.scalars(select(SecurityIncident).where(SecurityIncident.project_id==pid).order_by(SecurityIncident.id.desc())).all()]
 
 @app.get('/api/v1/metrics')
@@ -312,6 +363,7 @@ def ddos(flows:list[dict],threshold:int=100): return {'alerts':detect_ddos(flows
 
 @app.post('/api/v1/ml/train')
 def ml_train(samples:list[dict],seed:int=42):
+    if len(samples)>10000: raise HTTPException(422,'At most 10000 samples are supported')
     if len(samples)<30: raise HTTPException(422,'At least 30 samples are required')
     return train(samples,seed)
 
@@ -341,7 +393,7 @@ def project_policy(pid:int,payload:dict,db:Session=Depends(get_db)):
     return policy_evaluate(payload)
 
 @app.post('/api/v1/projects/{pid}/reports/pdf')
-def report_pdf(pid:int,db:Session=Depends(get_db)):
+def report_pdf(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     from fastapi.responses import Response
     from reportlab.lib.pagesizes import A4
     from reportlab.pdfgen import canvas
@@ -358,7 +410,7 @@ def report_pdf(pid:int,db:Session=Depends(get_db)):
     c.save(); return Response(buf.getvalue(),media_type='application/pdf',headers={'Content-Disposition':f'attachment; filename="cisconetx-{pid}.pdf"'})
 
 @app.get('/api/v1/projects/{pid}/runs.csv')
-def runs_csv(pid:int,db:Session=Depends(get_db)):
+def runs_csv(pid:int,db:Session=Depends(get_db),user:dict=Depends(current_user)):
     from fastapi.responses import PlainTextResponse
     import csv,io
     if not db.get(Project,pid): raise HTTPException(404,'Project not found')
@@ -415,7 +467,7 @@ def device_config_diff(old:dict,new:dict): return {'changes':diff_config(old,new
 def device_config_default(): return DEFAULT_DEVICE_CONFIG
 
 @app.post('/api/v1/ipv4/header')
-def ipv4_header(payload:dict):
+def ipv4_header_post(payload:dict):
     import ipaddress
     src=ipaddress.ip_address(payload['source']); dst=ipaddress.ip_address(payload['destination'])
     if src.version != 4 or dst.version != 4: raise HTTPException(422,'IPv4 addresses required')

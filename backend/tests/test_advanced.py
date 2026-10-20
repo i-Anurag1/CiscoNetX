@@ -22,3 +22,29 @@ def test_mac_access_and_nat():
 def test_packet_trace():
     x=packet_trace(DEFAULT_TOPOLOGY,'pc1','server1',20,42)
     assert x['path'][0]=='pc1' and x['path'][-1]=='server1'
+
+
+def test_arq_retransmits_lost_frames_and_completes():
+    for protocol in ("stop_and_wait", "go_back_n", "selective_repeat"):
+        result = arq(protocol, 8, 3, [2, 5], 42)
+        assert result["complete"] is True
+        assert result["delivered"] == list(range(8))
+        assert any(e["action"] == "LOSS" and e["seq"] == 2 for e in result["events"])
+        assert any(e["action"] == "RETRANSMIT" and e["seq"] == 2 for e in result["events"])
+
+
+def test_arq_rejects_invalid_arguments():
+    import pytest
+    with pytest.raises(ValueError):
+        arq("unknown", 8, 3, [])
+    with pytest.raises(ValueError):
+        arq("go_back_n", 8, 0, [])
+
+
+def test_arq_empty_losses_means_no_loss():
+    from app.simulation.advanced import arq
+
+    for protocol in ("stop_and_wait", "go_back_n", "selective_repeat"):
+        result = arq(protocol, frames=8, window=3, losses=[])
+        assert result["complete"] is True
+        assert not any(event["action"] == "LOSS" for event in result["events"])

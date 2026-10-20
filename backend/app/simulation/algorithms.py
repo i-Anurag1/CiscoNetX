@@ -12,6 +12,10 @@ def adjacency(topology, only_up=True):
 
 def dijkstra(topology, source, target):
     g=adjacency(topology)
+    if source not in g and source != target:
+        return []
+    if target not in g and source != target:
+        return []
     dist={source:0.0}; prev={}; pq=[(0.0,source)]
     while pq:
         d,u=heapq.heappop(pq)
@@ -29,7 +33,13 @@ def dijkstra(topology, source, target):
 
 def routing_table(topology, source):
     nodes=[n['id'] for n in topology.get('nodes',[])]
-    return [{'destination':n,'next_hop':(dijkstra(topology,source,n)[1] if len(dijkstra(topology,source,n))>1 else n),'path':dijkstra(topology,source,n)} for n in nodes if n!=source]
+    rows=[]
+    for n in nodes:
+        if n == source:
+            continue
+        path=dijkstra(topology,source,n)
+        rows.append({'destination':n,'next_hop':path[1] if len(path)>1 else n,'path':path})
+    return rows
 
 def distance_vector(topology):
     g=adjacency(topology); result={}
