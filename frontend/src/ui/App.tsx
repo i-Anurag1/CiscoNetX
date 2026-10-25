@@ -6,6 +6,7 @@ import { Workspace, PhysicalView } from './Workspace.tsx';
 import { Palette } from './Palette.tsx';
 import { CommonTools, ModeTabs, PduList, SimPanel, TimeBar } from './Panels.tsx';
 import { DeviceWindow } from './Windows.tsx';
+import { AgentWin, openAgent } from './Agent.tsx';
 import { AboutWin, CoachWin, ComplexPduWin, FiltersWin, HelpWin, InspectWin, LabsWin, PduInfoWin, PrefsWin, SubnetWin } from './Dialogs.tsx';
 import { net, ui, uiTouch, useRev, commit, undo, redo, resetAll, loadTopology, loadAutosave, openWin, toast, powerCycleAll, fastForward, savePrefs } from './store.ts';
 
@@ -42,7 +43,7 @@ function Menu({ title, items }: { title: string; items: Item[] }) {
   return (
     <div className="menu"><button className={open ? 'on' : ''} onClick={() => setOpen(!open)} onMouseEnter={e => { if (document.querySelector('.menu .drop')) { setOpen(true); void e; } }}>{title}</button>
       {open && <div className="drop">{items.map((it, i) => it === 'sep' ? <hr key={i} /> : Array.isArray(it) ? <button key={i} disabled={!it[1]} onClick={() => { it[1]?.(); setOpen(false); }}><span>{it[0]}</span><kbd>{it[2] ?? ''}</kbd></button>
-        : <div key={i} className="flyout"><button><span>{it.label}</span><kbd>▸</kbd></button><div className="drop sub">{it.sub.map(s => <button key={s.label} onClick={() => { s.fn(); setOpen(false); }}>{s.label}</button>)}</div></div>)}</div>}
+        : <div key={i} className="flyout"><button><span>{it.label}</span><kbd>â–¸</kbd></button><div className="drop sub">{it.sub.map(s => <button key={s.label} onClick={() => { s.fn(); setOpen(false); }}>{s.label}</button>)}</div></div>)}</div>}
     </div>
   );
 }
@@ -69,21 +70,22 @@ export function App() {
   return (
     <div className="app">
       <Defs />
-      <div className="titlebar"><span className="logo">◆</span> CiscoNetX — Packet Tracer Edition <span className="ver">v5.0</span></div>
+      <div className="titlebar"><span className="logo">â—†</span> CiscoNetX â€” Packet Tracer Edition <span className="ver">v5.0</span></div>
       <div className="menubar">
-        <Menu title="File" items={[['New', newDoc, 'Ctrl+N'], ['Open…', openFile, 'Ctrl+O'], { label: 'Open Samples', sub: SAMPLES.map(s => ({ label: s.title, fn: () => void openSample(s.id) })) }, 'sep', ['Save', save, 'Ctrl+S'], ['Save As…', save], 'sep', ['Print…', () => window.print(), 'Ctrl+P']]} />
+        <Menu title="File" items={[['New', newDoc, 'Ctrl+N'], ['Openâ€¦', openFile, 'Ctrl+O'], { label: 'Open Samples', sub: SAMPLES.map(s => ({ label: s.title, fn: () => void openSample(s.id) })) }, 'sep', ['Save', save, 'Ctrl+S'], ['Save Asâ€¦', save], 'sep', ['Printâ€¦', () => window.print(), 'Ctrl+P']]} />
         <Menu title="Edit" items={[['Undo', undo, 'Ctrl+Z'], ['Redo', redo, 'Ctrl+Y'], 'sep', ['Copy', copySel, 'Ctrl+C'], ['Paste', pasteSel, 'Ctrl+V'], ['Select All', () => { ui.selected = net.devices.map(d => d.id); uiTouch(); }, 'Ctrl+A'], ['Delete', () => { for (const id of ui.selected) net.removeDevice(id); ui.selected = []; commit(); uiTouch(); }, 'Del']]} />
-        <Menu title="Options" items={[['Preferences…', () => openWin('prefs', 'Preferences', { id: 'prefs' })], 'sep', [ui.prefs.devLabels ? '✓ Show Device Labels' : 'Show Device Labels', () => { ui.prefs.devLabels = !ui.prefs.devLabels; savePrefs(); }], [ui.prefs.portLabels ? '✓ Show Port Labels' : 'Show Port Labels', () => { ui.prefs.portLabels = !ui.prefs.portLabels; savePrefs(); }], [ui.prefs.linkLights ? '✓ Show Link Lights' : 'Show Link Lights', () => { ui.prefs.linkLights = !ui.prefs.linkLights; savePrefs(); }]]} />
-        <Menu title="View" items={[['Zoom In', () => zoom(1.15), '+'], ['Zoom Out', () => zoom(1 / 1.15), '-'], ['Reset Zoom', () => { ui.zoom = 1; uiTouch(); }], ['Zoom to Fit', fit], 'sep', [ui.prefs.grid ? '✓ Workspace Grid' : 'Workspace Grid', () => { ui.prefs.grid = !ui.prefs.grid; savePrefs(); }], ['Logical Workspace', () => { ui.view = 'logical'; uiTouch(); }], ['Physical Workspace', () => { ui.view = 'physical'; uiTouch(); }]]} />
+        <Menu title="Options" items={[['Preferencesâ€¦', () => openWin('prefs', 'Preferences', { id: 'prefs' })], 'sep', [ui.prefs.devLabels ? 'âœ“ Show Device Labels' : 'Show Device Labels', () => { ui.prefs.devLabels = !ui.prefs.devLabels; savePrefs(); }], [ui.prefs.portLabels ? 'âœ“ Show Port Labels' : 'Show Port Labels', () => { ui.prefs.portLabels = !ui.prefs.portLabels; savePrefs(); }], [ui.prefs.linkLights ? 'âœ“ Show Link Lights' : 'Show Link Lights', () => { ui.prefs.linkLights = !ui.prefs.linkLights; savePrefs(); }]]} />
+        <Menu title="View" items={[['Zoom In', () => zoom(1.15), '+'], ['Zoom Out', () => zoom(1 / 1.15), '-'], ['Reset Zoom', () => { ui.zoom = 1; uiTouch(); }], ['Zoom to Fit', fit], 'sep', [ui.prefs.grid ? 'âœ“ Workspace Grid' : 'Workspace Grid', () => { ui.prefs.grid = !ui.prefs.grid; savePrefs(); }], ['Logical Workspace', () => { ui.view = 'logical'; uiTouch(); }], ['Physical Workspace', () => { ui.view = 'physical'; uiTouch(); }]]} />
         <Menu title="Tools" items={[['Subnet Calculator', () => openWin('subnet', 'Subnet Calculator', { id: 'subnet' })], ['Power Cycle Devices', powerCycleAll], ['Fast Forward Time', fastForward]]} />
-        <Menu title="Extensions" items={[['CiscoNetX Labs (backend)…', () => openWin('labs', 'CiscoNetX Labs', { id: 'labs' })], ['AI Lab Coach…', () => openWin('coach', 'AI Lab Coach', { id: 'coach' })]]} />
+        <Menu title="AI Agent" items={[["Solve a lab question…", () => openAgent("solve")], ["Network Doctor…", () => openAgent("doctor")], ["Break it (fault injector)…", () => openAgent("doctor")]]} />
+        <Menu title="Extensions" items={[['CiscoNetX Labs (backend)â€¦', () => openWin('labs', 'CiscoNetX Labs', { id: 'labs' })], ['AI Lab Coachâ€¦', () => openWin('coach', 'AI Lab Coach', { id: 'coach' })]]} />
         <Menu title="Help" items={[['Quick Start & Shortcuts', () => openWin('help', 'Help', { id: 'help' })], ['About CiscoNetX', () => openWin('about', 'About', { id: 'about' })]]} />
       </div>
       <div className="toolbar">
         <TB i="new" t="New (Ctrl+N)" f={newDoc} /><TB i="open" t="Open (Ctrl+O)" f={openFile} /><TB i="save" t="Save (Ctrl+S)" f={save} /><TB i="print" t="Print" f={() => window.print()} /><span className="sep" />
         <TB i="copy" t="Copy" f={copySel} /><TB i="paste" t="Paste" f={pasteSel} /><TB i="undo" t="Undo (Ctrl+Z)" f={undo} /><TB i="redo" t="Redo (Ctrl+Y)" f={redo} /><span className="sep" />
         <TB i="zin" t="Zoom In" f={() => zoom(1.15)} /><TB i="zout" t="Zoom Out" f={() => zoom(1 / 1.15)} /><TB i="zreset" t="Reset Zoom" f={() => { ui.zoom = 1; uiTouch(); }} /><span className="sep" />
-        <TB i="calc" t="Subnet Calculator" f={() => openWin('subnet', 'Subnet Calculator', { id: 'subnet' })} /><span className="grow" /><span className="zoomlbl">{Math.round(ui.zoom * 100)}%</span><TB i="help" t="Help" f={() => openWin('help', 'Help', { id: 'help' })} />
+        <TB i="calc" t="Subnet Calculator" f={() => openWin('subnet', 'Subnet Calculator', { id: 'subnet' })} /><button className="ai-btn" title="AI Solver" onClick={() => openAgent("solve")}>✦ AI Solver</button><button className="ai-btn doc" title="Network Doctor" onClick={() => openAgent("doctor")}>⚕ Doctor</button><span className="grow" /><span className="zoomlbl">{Math.round(ui.zoom * 100)}%</span><TB i="help" t="Help" f={() => openWin('help', 'Help', { id: 'help' })} />
       </div>
       <div className="viewtabs"><button className={ui.view === 'logical' ? 'on' : ''} onClick={() => { ui.view = 'logical'; uiTouch(); }}>Logical</button><button className={ui.view === 'physical' ? 'on' : ''} onClick={() => { ui.view = 'physical'; uiTouch(); }}>Physical</button><span className="root">[Root]</span>
         <span className="hint">{ui.hint}</span></div>
@@ -97,7 +99,7 @@ export function App() {
         switch (w.kind) {
           case 'device': return <DeviceWindow key={w.id} w={w} />; case 'pduinfo': return <PduInfoWin key={w.id} w={w} />; case 'inspect': return <InspectWin key={w.id} w={w} />; case 'cpdu': return <ComplexPduWin key={w.id + (w.data?.edit ?? '')} w={w} />;
           case 'filters': return <FiltersWin key={w.id} w={w} />; case 'prefs': return <PrefsWin key={w.id} w={w} />; case 'help': return <HelpWin key={w.id} w={w} />; case 'about': return <AboutWin key={w.id} w={w} />;
-          case 'subnet': return <SubnetWin key={w.id} w={w} />; case 'labs': return <LabsWin key={w.id} w={w} />; case 'coach': return <CoachWin key={w.id} w={w} />; default: return null;
+          case 'subnet': return <SubnetWin key={w.id} w={w} />; case 'labs': return <LabsWin key={w.id} w={w} />; case 'coach': return <CoachWin key={w.id} w={w} />; case 'agent': return <AgentWin key={w.id} w={w} />; default: return null;
         }
       })}
       {ui.toast && <div className="toast" role="status">{ui.toast}</div>}
